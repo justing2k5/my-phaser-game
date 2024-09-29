@@ -12,26 +12,45 @@ export default class GameScene extends Phaser.Scene {
   private acceleration: number = 600;
   private drag: number = 600;
 
-  private isJumping: boolean = false;
-  private jumpDuration: number = 500; // Duration of jump in milliseconds
-  private jumpTimer: number = 0;
+  private rotationSpeed: number = 200; // degrees per second
 
-  private isOnObstacle: boolean = false; // Flag to track if player is on any obstacle after jumping
+  private isJumping: boolean = false;
+  private jumpHeight: number = 0; // Height added due to jumping
+  private jumpStartHeight: number = 0; // Player's height at the time of jump
+  private jumpPeakHeight: number = 0; // The peak height the player reaches during jump
+  private jumpDuration: number = 500; // Duration of the jump in milliseconds
+  private jumpElapsed: number = 0; // Time elapsed since the jump started
 
   private obstacles!: Phaser.Physics.Arcade.StaticGroup;
 
-  // New property: Player's current height
-  private playerHeight: number = 0; // 0 = on floor, 1 = jumped
+  // Player's height variables
+  private currentBaseHeight: number = 0; // Adjusts over time
+  private targetBaseHeight: number = 0; // Desired base height based on obstacle
+  private heightAdjustmentRate: number = 8; // Height units per second
 
   // Scaling factor: how much the player scales per height unit
-  private scaleFactor: number = 0.5; // Scale increases by 50% per height unit
+  private scaleFactor: number = 0.5;
+
+  // Base scale for the player (now twice as big)
+  private baseScale: number = 2;
+
+  // Collision body scaling factor
+  private collisionScale: number = 0.5; // Adjustable scalar for collision body size
+
+  // Graphics object for drawing collision bounds
+  private debugGraphics!: Phaser.GameObjects.Graphics;
 
   constructor() {
     super('GameScene');
   }
 
   preload() {
-    // No external assets to load since we're using simple shapes
+    // Load the sprite sheet for the player
+    // Frame size is 32x32
+    this.load.spritesheet('playerSprite', '/skating_sassy.png', {
+      frameWidth: 32,
+      frameHeight: 32,
+    });
   }
 
   create() {
@@ -44,26 +63,47 @@ export default class GameScene extends Phaser.Scene {
     // Create obstacles group
     this.obstacles = this.physics.add.staticGroup();
 
-    // Example obstacles with height values
-    // heightValue: 0 = floor, 1 = low obstacle, can be jumped over
-    // heightValue: 2 = high obstacle, cannot be jumped over
-    this.createObstacle(800, 1200 - 25, 1600, 50, 0); // Floor obstacle
-    this.createObstacle(200, 150, 50, 50, 1);
-    this.createObstacle(600, 450, 100, 100, 2);
-    this.createObstacle(400, 300, 75, 75, 1);
-    this.createObstacle(800, 600, 100, 100, 2); // Added another high obstacle for testing
+    // Create a row of 10 obstacles, each 50x200 pixels, with increasing height values
+    const obstacleWidth = 50;
+    const obstacleHeightPixels = 200;
+    const startX = 100; // Starting X position for the first obstacle
+    const yPosition = 400; // Y position for all obstacles (you can adjust as needed)
+    let obstacleHeightValue = 0.25; // Starting height value
 
-    // Create player as a circle using a graphics texture
-    const graphics = this.add.graphics();
-    graphics.fillStyle(0x00ff00, 1);
-    graphics.fillCircle(0, 0, 20);
-    graphics.generateTexture('player', 40, 40);
-    graphics.destroy();
+    for (let i = 0; i < 10; i++) {
+      const xPosition = startX + i * obstacleWidth; // Position obstacles next to each other
+      this.createObstacle(
+        xPosition,
+        yPosition,
+        obstacleWidth,
+        obstacleHeightPixels,
+        obstacleHeightValue
+      );
+      obstacleHeightValue += 0.25; // Increase the height value by 0.25 for each obstacle
+    }
 
-    this.player = this.physics.add.sprite(500, 500, 'player');
-    this.player.setCircle(20);
+    // Create player sprite using the sprite sheet
+    this.player = this.physics.add.sprite(500, 500, 'playerSprite', 0);
     this.player.setCollideWorldBounds(true);
-    this.player.setScale(1); // Initial scale corresponding to height 0
+    this.player.setScale(this.baseScale); // Set player to twice its original size
+
+    // Rotate the sprite image by 90 degrees
+    this.player.setAngle(90);
+
+    // Update the physics body size to match the new scale and apply collisionScale
+    this.player.body.setSize(
+      this.player.displayWidth * this.collisionScale,
+      this.player.displayHeight * this.collisionScale,
+      true
+    );
+
+    // Define animations
+    this.anims.create({
+      key: 'skate',
+      frames: this.anims.generateFrameNumbers('playerSprite', { start: 0, end: 14 }),
+      frameRate: 15,
+      repeat: -1,
+    });
 
     // Enable collision between player and obstacles with a process callback
     this.physics.add.collider(
@@ -77,48 +117,48 @@ export default class GameScene extends Phaser.Scene {
     // Set up keyboard input
     this.cursors = this.input.keyboard.createCursorKeys();
     this.movementKeys = [
-      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W),
-      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
-      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S),
-      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
+      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W), // movementKeys[0]
+      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A), // movementKeys[1]
+      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S), // movementKeys[2]
+      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D), // movementKeys[3]
     ];
     this.jumpKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
     // Set up camera to follow the player
     this.cameras.main.startFollow(this.player);
-    this.cameras.main.setBounds(0, 0, 1600, 1200); // Adjust the bounds as needed
-    this.physics.world.setBounds(0, 0, 1600, 1200); // Match physics bounds to camera bounds
+    this.cameras.main.setBounds(0, 0, 1600, 1200);
+    this.physics.world.setBounds(0, 0, 1600, 1200);
+
+    // Create graphics object for debugging
+    this.debugGraphics = this.add.graphics();
   }
 
   update(time: number, delta: number) {
     const dt = delta / 1000;
 
-    // Reset the obstacle flag each frame
-    this.isOnObstacle = false;
-
-    // Check for overlaps with any obstacles
-    this.physics.overlap(this.player, this.obstacles, this.handleOverlap, undefined, this);
-
-    // Handle movement input
-    let input = new Phaser.Math.Vector2(0, 0);
-
+    // Handle rotation input
     if (this.cursors.left.isDown || this.movementKeys[1].isDown) {
-      input.x -= 1;
+      this.player.angle -= this.rotationSpeed * dt;
     }
     if (this.cursors.right.isDown || this.movementKeys[3].isDown) {
-      input.x += 1;
-    }
-    if (this.cursors.up.isDown || this.movementKeys[0].isDown) {
-      input.y -= 1;
-    }
-    if (this.cursors.down.isDown || this.movementKeys[2].isDown) {
-      input.y += 1;
+      this.player.angle += this.rotationSpeed * dt;
     }
 
-    if (input.length() > 0) {
-      input.normalize();
-      this.velocity.x += input.x * this.acceleration * dt;
-      this.velocity.y += input.y * this.acceleration * dt;
+    // Handle forward/backward movement
+    let moveForward = 0;
+
+    if (this.cursors.up.isDown || this.movementKeys[0].isDown) {
+      moveForward += 1;
+    }
+    if (this.cursors.down.isDown || this.movementKeys[2].isDown) {
+      moveForward -= 1;
+    }
+
+    if (moveForward !== 0) {
+      const angleRad = Phaser.Math.DegToRad(this.player.angle);
+      const force = new Phaser.Math.Vector2(Math.cos(angleRad), Math.sin(angleRad))
+        .scale(moveForward * this.acceleration * dt);
+      this.velocity.add(force);
     } else {
       // Apply drag when no input
       const dragForce = this.velocity.clone().scale(this.drag * dt);
@@ -130,70 +170,163 @@ export default class GameScene extends Phaser.Scene {
     }
 
     // Clamp velocity to max speed
-    this.velocity.setLength(Math.min(this.velocity.length(), this.maxSpeed));
+    if (this.velocity.length() > this.maxSpeed) {
+      this.velocity.setLength(this.maxSpeed);
+    }
 
     // Update player velocity
     this.player.setVelocity(this.velocity.x, this.velocity.y);
 
-    // Handle jumping and scaling
+    // Update target base height based on the obstacle closest to its center overlapping its bounds
+    this.targetBaseHeight = this.getPlayerTargetBaseHeight();
+
+    // Update base height towards target
+    this.updateBaseHeight(delta);
+
+    // Handle jumping mechanics
     this.handleJumping(delta);
 
-    // Handle height adjustment over time (falling)
-    this.handleHeightAdjustment(delta);
+    // Calculate player's current height (currentBaseHeight + jumpHeight)
+    const playerHeight = this.currentBaseHeight + this.jumpHeight;
+
+    // Update player scale based on current height
+    this.updatePlayerScale(playerHeight);
+
+    // Play animation when moving
+    if (this.velocity.length() > 0) {
+      this.player.anims.play('skate', true);
+    } else {
+      this.player.anims.stop();
+      this.player.setFrame(0); // Set to the first frame when idle
+    }
+
+    // Draw collision bounds
+    this.drawCollisionBounds();
+  }
+
+  private updateBaseHeight(delta: number) {
+    // Adjust currentBaseHeight towards targetBaseHeight
+    const dt = delta / 1000;
+    const heightDifference = this.targetBaseHeight - this.currentBaseHeight;
+
+    if (heightDifference !== 0) {
+      // Determine adjustment direction
+      const adjustment = Phaser.Math.Clamp(
+        heightDifference,
+        -this.heightAdjustmentRate * dt,
+        this.heightAdjustmentRate * dt
+      );
+
+      this.currentBaseHeight += adjustment;
+
+      // Check if adjustment is complete
+      if (Math.abs(this.targetBaseHeight - this.currentBaseHeight) < 0.01) {
+        this.currentBaseHeight = this.targetBaseHeight;
+      }
+
+      // Set isJumping to true during adjustment
+      this.isJumping = true;
+    } else {
+      // Not adjusting height
+      if (!this.isJumping) {
+        this.isJumping = false;
+      }
+    }
   }
 
   private handleJumping(delta: number) {
     // Check if jump key was just pressed and player is not already jumping
     if (Phaser.Input.Keyboard.JustDown(this.jumpKey) && !this.isJumping) {
       this.isJumping = true;
-      //this.jumpTimer = this.jumpDuration;
-
-      // Increase player's height to 1
-      this.playerHeight += 1;
-      
+      this.jumpElapsed = 0;
+      this.jumpStartHeight = this.currentBaseHeight;
+      this.jumpPeakHeight = this.jumpStartHeight + 2; // Jump up to 2 more than current height
     }
 
-    this.playerHeight -= 0.01 * delta;
+    if (this.isJumping && this.jumpElapsed < this.jumpDuration) {
+      this.jumpElapsed += delta;
+      const halfDuration = this.jumpDuration / 2;
 
-    // If our height is equal to whatever obstacle we're on, we're not jumping anymore
-    const overlappingObstacles = this.getOverlappingObstacles();
-    if (overlappingObstacles.length > 0 && this.isJumping) {
-      const obstacle = overlappingObstacles[0];
-      const obstacleHeight = (obstacle as any).heightValue;
-      
-      if (this.playerHeight === obstacleHeight) {
+      if (this.jumpElapsed <= halfDuration) {
+        // Ascending
+        const t = this.jumpElapsed / halfDuration;
+        this.jumpHeight = Phaser.Math.Linear(0, this.jumpPeakHeight - this.jumpStartHeight, t);
+      } else if (this.jumpElapsed <= this.jumpDuration) {
+        // Descending
+        const t = (this.jumpElapsed - halfDuration) / halfDuration;
+        this.jumpHeight = Phaser.Math.Linear(
+          this.jumpPeakHeight - this.jumpStartHeight,
+          0,
+          t
+        );
+      } else {
+        // Jump complete
+        this.jumpHeight = 0;
+      }
+    } else {
+      // Not in a manual jump
+      this.jumpHeight = 0;
+      if (this.currentBaseHeight === this.targetBaseHeight) {
         this.isJumping = false;
       }
     }
-
-    this.updatePlayerScale();
   }
 
-  private handleHeightAdjustment(delta: number) {
-    // If player's height is greater than the obstacle's height, decrease it over time
-    if (this.playerHeight > 0) {
-      // Find the obstacle the player is currently on
-      const overlappingObstacles = this.getOverlappingObstacles();
-      if (overlappingObstacles.length > 0) {
-        const obstacle = overlappingObstacles[0];
-        const obstacleHeight = (obstacle as any).heightValue;
+  private getPlayerTargetBaseHeight(): number {
+    // Determine obstacles overlapping the player's bounds
+    const overlappingObstacles: Phaser.GameObjects.GameObject[] = [];
+    this.physics.overlap(
+      this.player,
+      this.obstacles,
+      (_, obstacle) => {
+        overlappingObstacles.push(obstacle);
+      },
+      undefined,
+      this
+    );
 
-        if (this.playerHeight > obstacleHeight) {
-          // Decrease height slightly
-          this.playerHeight -= 0.01 * delta; // Adjust the rate as needed
-          if (this.playerHeight < obstacleHeight) {
-            this.playerHeight = obstacleHeight;
-          }
-          this.updatePlayerScale();
-        }
+    if (overlappingObstacles.length === 0) {
+      return 0; // No overlapping obstacles, height is 0
+    }
+
+    // Find the obstacle closest to the player's center
+    let closestObstacle: Phaser.GameObjects.GameObject = overlappingObstacles[0];
+    let minDistance = Phaser.Math.Distance.Between(
+      this.player.x,
+      this.player.y,
+      overlappingObstacles[0].x,
+      overlappingObstacles[0].y
+    );
+
+    for (let i = 1; i < overlappingObstacles.length; i++) {
+      const obstacle = overlappingObstacles[i];
+      const distance = Phaser.Math.Distance.Between(
+        this.player.x,
+        this.player.y,
+        obstacle.x,
+        obstacle.y
+      );
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestObstacle = obstacle;
       }
     }
+
+    const obstacleHeight = (closestObstacle as any).heightValue;
+    return obstacleHeight;
   }
 
-  private updatePlayerScale() {
+  private updatePlayerScale(playerHeight: number) {
     // Update the player's scale based on current height
-    const newScale = 1 + this.playerHeight * this.scaleFactor;
+    const newScale = this.baseScale + playerHeight * this.scaleFactor;
     this.player.setScale(newScale);
+
+    // Update the physics body size to match the new scale and apply collisionScale
+    this.player.body.setSize(
+      this.player.displayWidth * this.collisionScale,
+      this.player.displayHeight * this.collisionScale,
+      true
+    );
   }
 
   private createObstacle(
@@ -224,36 +357,17 @@ export default class GameScene extends Phaser.Scene {
   ): boolean {
     const obstacleHeight = (obstacle as any).heightValue;
 
-    // Allow collision only if player's height is less than or equal to obstacle's height
-    // Player can pass over low obstacles when jumping (height >=1)
-    if (this.playerHeight > obstacleHeight) {
-      // Player's height is greater; allow passing over
-      return false; // Ignore collision
+    // Effective player height during collision checks
+    const effectivePlayerHeight = this.currentBaseHeight + this.jumpHeight;
+
+    // Collision occurs if obstacleHeight > playerHeight + 1
+    if (obstacleHeight > effectivePlayerHeight + 1) {
+      // Collision occurs
+      return true; // Process collision
     }
 
-    // Handle collision normally
-    return true;
-  }
-
-  private handleOverlap(
-    player: Phaser.GameObjects.GameObject,
-    obstacle: Phaser.GameObjects.GameObject
-  ) {
-    const obstacleHeight = (obstacle as any).heightValue;
-
-    // Player is considered on an obstacle only if their height matches the obstacle's height
-    if (this.playerHeight === obstacleHeight && obstacleHeight > 0) {
-      this.isOnObstacle = true;
-    }
-  }
-
-  private getOverlappingObstacles(): Phaser.GameObjects.GameObject[] {
-    // Return all obstacles overlapping with the player
-    const overlapping = this.physics.overlap(this.player, this.obstacles);
-    if (overlapping) {
-      return overlapping;
-    }
-    return [];
+    // Player can pass through
+    return false;
   }
 
   private createBackground() {
@@ -269,5 +383,28 @@ export default class GameScene extends Phaser.Scene {
     for (let y = 0; y <= 1200; y += gridSize) {
       this.add.line(0, 0, 0, y, 1600, y, gridColor).setOrigin(0);
     }
+  }
+
+  private drawCollisionBounds() {
+    // Clear previous drawings
+    this.debugGraphics.clear();
+
+    // Draw player collision bounds
+    this.debugGraphics.lineStyle(1, 0x00ff00); // Green color for player
+    this.debugGraphics.strokeRect(
+      this.player.body.x,
+      this.player.body.y,
+      this.player.body.width,
+      this.player.body.height
+    );
+
+    // Draw obstacles collision bounds
+    this.debugGraphics.lineStyle(1, 0xff0000); // Red color for obstacles
+    this.obstacles.children.iterate((obstacle: Phaser.GameObjects.GameObject) => {
+      const body = obstacle.body as Phaser.Physics.Arcade.Body;
+      if (body) {
+        this.debugGraphics.strokeRect(body.x, body.y, body.width, body.height);
+      }
+    });
   }
 }
